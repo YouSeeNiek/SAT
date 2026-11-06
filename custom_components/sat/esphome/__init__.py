@@ -192,9 +192,42 @@ class SatEspHomeCoordinator(SatDataUpdateCoordinator, SatEntityCoordinator):
         await super().async_set_control_max_setpoint(value)
 
     def _get_entity_id(self, domain: str, key: str):
-        unique_id = f"{self._mac_address.upper()}-{domain}-{key}"
-        _LOGGER.debug(f"Attempting to find the unique_id of {unique_id}")
-        return self._entity_registry.async_get_entity_id(domain, esphome.DOMAIN, unique_id)
+        """Resolve the Home Assistant entity_id for a given ESPHome domain/key.
+
+        ESPHome has used two unique_id formats over time:
+          - legacy: "{MAC}-{domain}-{key}"
+          - current: "{MAC}/{sub_device_index}/{domain}/{key}"
+
+        We try the current format first (recent ESPHome firmware), then fall
+        back to the legacy format so older installs keep working, and finally
+        fall back to scanning the entities already registered for this device
+        (matched by domain + trailing key), which also covers unforeseen
+        formats or a non-zero sub-device index.
+        """
+        mac = self._mac_address.upper()
+
+        unique_id_current = f"{mac}/0/{domain}/{key}"
+        if entity_id := self._entity_registry.async_get_entity_id(domain, esphome.DOMAIN, unique_id_current):
+            return entity_id
+
+        unique_id_legacy = f"{mac}-{domain}-{key}"
+        if entity_id := self._entity_registry.async_get_entity_id(domain, esphome.DOMAIN, unique_id_legacy):
+            _LOGGER.debug("Resolved '%s.%s' via legacy unique_id format.", domain, key)
+            return entity_id
+
+        for entry in self._entities:
+            if entry.domain != domain:
+                continue
+
+            if entry.unique_id in (unique_id_current, unique_id_legacy):
+                return entry.entity_id
+
+            if entry.unique_id.endswith(f"/{key}") or entry.unique_id.endswith(f"-{key}"):
+                _LOGGER.debug("Resolved '%s.%s' via fallback unique_id scan (%s).", domain, key, entry.unique_id)
+                return entry.entity_id
+
+        _LOGGER.debug("Could not find entity for domain=%s, key=%s (mac=%s)", domain, key, mac)
+        return None
 
     async def _send_command(self, domain: str, service: str, _key: str, payload: dict):
         """Helper method to send a command to a specified domain and service."""
