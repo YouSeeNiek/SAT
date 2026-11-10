@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import timedelta, datetime
 from time import monotonic, time
 from typing import Optional, Callable
@@ -113,6 +114,7 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
         self._setpoint = None
         self._calculated_setpoint = None
         self._last_boiler_temperature = None
+        self._last_commanded_temperature: Optional[float] = None
 
         self._hvac_mode = None
         self._target_temperature = None
@@ -393,6 +395,12 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
             "setpoint": self._setpoint,
             "current_humidity": self.current_humidity,
 
+            "home_temperature": self._presets.get(PRESET_HOME),
+            "away_temperature": self._presets.get(PRESET_AWAY),
+            "sleep_temperature": self._presets.get(PRESET_SLEEP),
+            "comfort_temperature": self._presets.get(PRESET_COMFORT),
+            "activity_temperature": self._presets.get(PRESET_ACTIVITY),
+
             "summer_simmer_index": SummerSimmer.index(self.current_temperature, self.current_humidity),
             "summer_simmer_perception": SummerSimmer.perception(self.current_temperature, self.current_humidity),
 
@@ -602,20 +610,23 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
 
     async def _async_thermostat_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle changes to the connected thermostat."""
-        old_state = event.data.get("old_state")
-        if old_state is None or old_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return
-
         new_state = event.data.get("new_state")
         if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             return
 
-        if (
-                old_state.state != new_state.state or
-                old_state.attributes.get("temperature") != new_state.attributes.get("temperature")
-        ):
-            _LOGGER.debug("Thermostat State Changed.")
-            await self.async_set_target_temperature(new_state.attributes.get("temperature"), cascade=False)
+        new_temperature = new_state.attributes.get("temperature")
+        if new_temperature is None:
+            return
+
+        new_temperature = float(new_temperature)
+
+        # Ignore this if it's just a (possibly delayed) confirmation of a command we sent ourselves
+        if self._last_commanded_temperature is not None and math.isclose(new_temperature, self._last_commanded_temperature, abs_tol=0.05):
+            _LOGGER.debug("Ignoring thermostat echo of our own command (%.2f°C).", new_temperature)
+            return
+
+        _LOGGER.debug("Thermostat State Changed to %.1f°C.", new_temperature)
+        await self.async_set_target_temperature(new_temperature, cascade=True)
 
     async def _async_inside_sensor_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle changes to the inside temperature sensor."""
@@ -987,17 +998,16 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
         _LOGGER.debug("Attempting to set heater state to: %s", state)
 
         if state == DeviceState.ON:
-            if not self.valves_open:
-                if self._coordinator.device_active:
-                    _LOGGER.info("Valves closed while heater active. Turning off.")
-                    await self._coordinator.async_set_heater_state(DeviceState.OFF)
-                else:
-                    _LOGGER.warning("Cannot turn on heater: no valves are open.")
-                return
-
             if self._coordinator.device_active:
                 _LOGGER.info("Heater is already active. No action taken.")
                 return
+
+            if not self.valves_open:
+                if not getattr(self, "_valves_closed_logged", False):
+                    _LOGGER.info("Cannot turn on heater: no valves are open.")
+                    self._valves_closed_logged = True
+                return
+            self._valves_closed_logged = False
 
         elif state == DeviceState.OFF:
             if not self._coordinator.device_active:
@@ -1104,6 +1114,9 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
         self._target_temperature = temperature
 
         if cascade:
+            # Remember what we last commanded, so we can recognize our own echoes later
+            self._last_commanded_temperature = temperature
+
             # Set the target temperature for each main climate
             for entity_id in self._radiators:
                 data = {ATTR_ENTITY_ID: entity_id, ATTR_TEMPERATURE: temperature}
