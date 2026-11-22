@@ -523,8 +523,11 @@ class SatHeatingControl:
             return
 
         if not device_state.flame_active:
-            if (return_temperature := device_state.return_temperature) is None:
-                _LOGGER.warning("Setpoint override (flame off): no return temperature found.")
+            # Boilers without a return sensor report None or 0.0; return+offset would clamp to COLD_SETPOINT and never ignite.
+            if (return_temperature := device_state.return_temperature) is None or return_temperature <= 0:
+                _LOGGER.debug("Setpoint override (flame off): no return temperature, using requested %.1f°C.", requested_setpoint)
+                self._control_setpoint = requested_setpoint
+                self._flame_off_hold_setpoint = requested_setpoint
                 return
 
             flame_off_offset = config.flame_off_setpoint_offset_celsius
