@@ -611,3 +611,23 @@ async def test_climate_reports_its_temperatures_natively(climate):
 def test_climate_provides_the_native_temperature_api_beside_the_legacy_one(climate):
     for name in ("temperature_unit", "current_temperature", "target_temperature"):
         assert {name, f"native_{name}"} <= set(vars(SatClimate))
+
+
+async def test_thermostat_change_is_cascaded_and_own_echo_ignored(hass, climate, demand_control):
+    _update_climate_config(demand_control, climate=climate, data={CONF_THERMOSTAT: "climate.wall"}, options={CONF_PUSH_SETPOINT_TO_THERMOSTAT: True})
+    calls = async_mock_service(hass, "climate", "set_temperature")
+
+    def _event(temperature):
+        return SimpleNamespace(data={"new_state": State("climate.wall", HVACMode.HEAT, {"temperature": temperature})})
+
+    await climate._async_thermostat_changed(_event(21.5))
+    assert climate.native_target_temperature == 21.5
+    assert [(call.data["entity_id"], call.data["temperature"]) for call in calls] == [("climate.wall", 21.5)]
+
+    # The thermostat confirming our own command must not trigger another cascade
+    await climate._async_thermostat_changed(_event("21.5"))
+    assert len(calls) == 1
+
+
+async def test_preset_temperatures_are_exposed_as_attributes(climate):
+    assert climate.extra_state_attributes["home_temperature"] == climate._presets["home"]

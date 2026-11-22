@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime
 from typing import Any, Optional
 
@@ -37,7 +38,7 @@ from .entity import SatEntity
 from .entry_data import SatConfig, get_entry_data
 from .heating_control import SatHeatingControl
 from .helpers import float_value
-from .presets import RoomPresets, preset_temperatures
+from .presets import PRESET_TEMPERATURE_KEYS, RoomPresets, preset_temperatures
 from .summer_simmer import SummerSimmer
 from .types import PWMStatus
 
@@ -99,6 +100,7 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
         self._pre_activity_preset: Optional[str] = None
         self._pre_custom_temperature: Optional[float] = None
         self._pre_activity_temperature: Optional[float] = None
+        self._last_commanded_temperature: Optional[float] = None
         self._window_sensor_handle: Optional[asyncio.Task[None]] = None
 
         self._temperature_unit = unit
@@ -190,6 +192,8 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
             "room_temperatures": self._demand_control.room_temperatures,
             "current_humidity": self.current_humidity,
             "setpoint": self._heating_control.control_setpoint,
+
+            **{key: self._presets.get(preset) for preset, key in PRESET_TEMPERATURE_KEYS.items()},
 
             "summer_simmer_index": SummerSimmer.index(self.native_current_temperature, self.current_humidity),
             "summer_simmer_perception": SummerSimmer.perception(self.native_current_temperature, self.current_humidity),
@@ -378,6 +382,9 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
             return
 
         if cascade:
+            # Remember what we last commanded, so we can recognize our own echoes later
+            self._last_commanded_temperature = temperature
+
             # Set the target temperature for each main climate
             for entity_id in self._config.radiators:
                 data = {ATTR_ENTITY_ID: entity_id, ATTR_TEMPERATURE: temperature}
@@ -401,12 +408,36 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
 
         self._event_listeners_registered = True
 
+        if self._config.thermostat is not None:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self.hass, self._config.thermostat, self._async_thermostat_changed
+                )
+            )
+
         if len(self._config.window_sensors) > 0:
             self.async_on_remove(
                 async_track_state_change_event(
                     self.hass, list(self._config.window_sensors), self._async_window_sensor_changed
                 )
             )
+
+    async def _async_thermostat_changed(self, event: Event[EventStateChangedData]) -> None:
+        """Follow the target temperature of the connected thermostat and cascade it."""
+        new_state = event.data.get("new_state")
+        if new_state is None or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return
+
+        if (new_temperature := float_value(new_state.attributes.get("temperature"))) is None:
+            return
+
+        # Ignore a (possibly delayed) confirmation of a command we sent ourselves
+        if self._last_commanded_temperature is not None and math.isclose(new_temperature, self._last_commanded_temperature, abs_tol=0.05):
+            _LOGGER.debug("Ignoring thermostat echo of our own command (%.2f).", new_temperature)
+            return
+
+        _LOGGER.debug("Thermostat temperature changed to %.1f.", new_temperature)
+        await self.async_set_target_temperature(new_temperature, cascade=True)
 
     async def _async_window_sensor_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle changes to the contact sensor entity."""

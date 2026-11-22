@@ -956,12 +956,7 @@ class SatDemandControl:
             self.control_pid()
             self.schedule_heating_control_loop()
 
-        if (new_temperature := new_state.attributes.get("temperature")) is None:
-            return
-
-        if old_state.attributes.get("temperature") != new_temperature:
-            _LOGGER.debug("Thermostat temperature changed.")
-            self.set_target_temperature(new_temperature)
+        # Target temperature changes are followed (and cascaded) by SatClimate._async_thermostat_changed
 
     async def _async_entity_changed(self, event: Event[EventStateChangedData]) -> None:
         """Handle changes to an entity."""
