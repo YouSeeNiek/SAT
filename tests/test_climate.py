@@ -631,3 +631,12 @@ async def test_thermostat_change_is_cascaded_and_own_echo_ignored(hass, climate,
 
 async def test_preset_temperatures_are_exposed_as_attributes(climate):
     assert climate.extra_state_attributes["home_temperature"] == climate._presets["home"]
+
+
+async def test_room_preset_temperatures_are_exposed_per_room(monkeypatch, climate, demand_control):
+    monkeypatch.setattr(demand_control.areas, "ids", lambda: ["climate.bedroom"])
+    monkeypatch.setattr(climate._room_presets, "target", lambda room_id, preset: 15.0 if preset == "sleep" else 20.0)
+
+    room = climate.extra_state_attributes["room_presets"]["climate.bedroom"]
+    assert room["sleep_temperature"] == 15.0
+    assert room["home_temperature"] == 20.0

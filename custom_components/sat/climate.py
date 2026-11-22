@@ -194,6 +194,10 @@ class SatClimate(SatEntity, ClimateEntity, RestoreEntity):
             "setpoint": self._heating_control.control_setpoint,
 
             **{key: self._presets.get(preset) for preset, key in PRESET_TEMPERATURE_KEYS.items()},
+            "room_presets": {
+                entity_id: {key: self._room_presets.target(entity_id, preset) for preset, key in PRESET_TEMPERATURE_KEYS.items()}
+                for entity_id in self._demand_control.areas.ids()
+            },
 
             "summer_simmer_index": SummerSimmer.index(self.native_current_temperature, self.current_humidity),
             "summer_simmer_perception": SummerSimmer.perception(self.native_current_temperature, self.current_humidity),
