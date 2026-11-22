@@ -15,6 +15,7 @@ from homeassistant.helpers.dispatcher import dispatcher_send
 from .boiler_health import BoilerHealthMonitor
 from .const import (
     COLD_SETPOINT,
+    FLAME_OFF_FLOW_OFFSET_CELSIUS,
     HEATER_STARTUP_TIMEFRAME,
     DHW_OVERSHOOT_GUARD_SECONDS,
     MINIMUM_RELATIVE_MODULATION,
@@ -525,9 +526,20 @@ class SatHeatingControl:
         if not device_state.flame_active:
             # Boilers without a return sensor report None or 0.0; return+offset would clamp to COLD_SETPOINT and never ignite.
             if (return_temperature := device_state.return_temperature) is None or return_temperature <= 0:
-                _LOGGER.debug("Setpoint override (flame off): no return temperature, using requested %.1f°C.", requested_setpoint)
-                self._control_setpoint = requested_setpoint
-                self._flame_off_hold_setpoint = requested_setpoint
+                # Requested alone stays below warm water in the pipes at low demand, so the boiler would not ignite.
+                flame_off_hold_setpoint = requested_setpoint
+                if device_state.flow_temperature is not None:
+                    flame_off_hold_setpoint = max(requested_setpoint, device_state.flow_temperature + FLAME_OFF_FLOW_OFFSET_CELSIUS)
+
+                flame_off_hold_setpoint = min(flame_off_hold_setpoint, self._config.limits.maximum_setpoint)
+                self._control_setpoint = flame_off_hold_setpoint
+                self._flame_off_hold_setpoint = flame_off_hold_setpoint
+
+                _LOGGER.debug(
+                    "Setpoint override (flame off, no return temperature): flow=%s -> %.1f°C (intended=%.1f°C)",
+                    device_state.flow_temperature, flame_off_hold_setpoint, requested_setpoint,
+                )
+
                 return
 
             flame_off_offset = config.flame_off_setpoint_offset_celsius

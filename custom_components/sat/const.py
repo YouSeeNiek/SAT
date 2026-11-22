@@ -42,6 +42,9 @@ MAXIMUM_RELATIVE_MODULATION = 100
 
 MAX_BOILER_TEMPERATURE_AGE = 60
 
+# Without a return sensor, ignite above the water already in the system (matches the old "Boiler Temperature" mode).
+FLAME_OFF_FLOW_OFFSET_CELSIUS = 10.0
+
 # Config entry keys and options used by the integration.
 CONF_MODE = "mode"
 CONF_NAME = "name"

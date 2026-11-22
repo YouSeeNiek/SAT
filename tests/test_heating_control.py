@@ -221,7 +221,14 @@ async def test_pwm_flame_off_return_offset(hass, monkeypatch, coordinator):
 
 
 @pytest.mark.parametrize("return_temperature", [None, 0.0])
-async def test_pwm_flame_off_without_return_sensor_uses_requested(hass, monkeypatch, coordinator, return_temperature):
+@pytest.mark.parametrize(
+    ("requested", "flow", "expected"),
+    [
+        (52.2, 30.0, 52.2),  # high demand: requested is already above the water in the pipes
+        (38.0, 42.0, 52.0),  # low demand, warm pipes: ignite above the flow temperature
+    ],
+)
+async def test_pwm_flame_off_without_return_sensor_ignites(hass, monkeypatch, coordinator, return_temperature, requested, flow, expected):
     _update_coordinator_config(coordinator)
     monkeypatch.setattr(type(coordinator), "return_temperature", property(lambda self: return_temperature))
 
@@ -230,10 +237,11 @@ async def test_pwm_flame_off_without_return_sensor_uses_requested(hass, monkeypa
     monkeypatch.setattr(heating_control._pwm, "update", lambda *args, **kwargs: None)
 
     await coordinator.async_set_heater_state(HeaterState.OFF)
+    await coordinator.async_set_boiler_temperature(flow)
 
-    await heating_control.update(_make_demand(52.2))
+    await heating_control.update(_make_demand(requested))
 
-    assert heating_control.control_setpoint == 52.2
+    assert heating_control.control_setpoint == expected
     assert coordinator.active
 
 
